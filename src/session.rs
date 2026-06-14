@@ -88,8 +88,14 @@ impl PtySession {
             .spawn_command(builder)
             .map_err(|e| Error::Spawn(e.to_string()))?;
 
-        let mut reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| Error::PtyOpen(e.to_string()))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| Error::PtyOpen(e.to_string()))?;
 
         // Drop the slave side now that the child owns its end. Keeping
         // it open in the parent confuses some shells about whether the
@@ -186,7 +192,7 @@ impl PtySession {
             })
             .map_err(|e| Error::PtyResize(e.to_string()))?;
         let mut s = self.shared.lock().unwrap();
-        s.parser.set_size(rows, cols);
+        s.parser.screen_mut().set_size(rows, cols);
         Ok(())
     }
 

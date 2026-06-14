@@ -34,8 +34,7 @@ fn echo_round_trip() {
 #[cfg(unix)]
 #[test]
 fn send_line_and_round_trip_through_cat() {
-    let mut sess =
-        PtySession::spawn("sh", &["-c", "cat"]).expect("spawn cat");
+    let mut sess = PtySession::spawn("sh", &["-c", "cat"]).expect("spawn cat");
     sess.set_default_timeout(Duration::from_secs(10));
 
     sess.send_line("ping").expect("send ping");
@@ -50,8 +49,7 @@ fn send_line_and_round_trip_through_cat() {
 #[cfg(unix)]
 #[test]
 fn render_view_matches_raw_view() {
-    let mut sess =
-        PtySession::spawn("sh", &["-c", "echo screen-line-1"]).expect("spawn");
+    let mut sess = PtySession::spawn("sh", &["-c", "echo screen-line-1"]).expect("spawn");
     sess.set_default_timeout(Duration::from_secs(5));
 
     // Wait for the line to land in raw bytes.
