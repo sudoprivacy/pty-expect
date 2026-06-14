@@ -15,10 +15,24 @@ fn echo_command() -> (&'static str, Vec<&'static str>) {
 
 #[cfg(windows)]
 fn echo_command() -> (&'static str, Vec<&'static str>) {
-    // `cmd /C` runs the command then exits. We do not need the
-    // interactive cat half on Windows for this smoke test — the test
-    // is satisfied by seeing the echo land in the PTY.
-    ("cmd", vec!["/C", "echo hello-from-pty-expect"])
+    // PowerShell with a deliberate `Start-Sleep` after the write. The
+    // sleep is load-bearing: it keeps the child alive for ~1s after it
+    // emits the line so the parent-side reader can drain the ConPTY
+    // pipe before the child exits and the kernel closes the pipe.
+    //
+    // The `cmd /C echo` shape this code used to take exited within a
+    // millisecond, and on Windows ConPTY that race (fast child exit
+    // vs. reader scheduling) drops the output on the floor: the
+    // reader.read() goes straight to EOF without ever seeing the line.
+    (
+        "powershell",
+        vec![
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Write-Host 'hello-from-pty-expect'; Start-Sleep -Seconds 1",
+        ],
+    )
 }
 
 #[test]

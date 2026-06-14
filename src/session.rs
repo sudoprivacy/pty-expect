@@ -268,18 +268,39 @@ impl PtySession {
     }
 }
 
+/// Maximum time `Drop` waits for the reader thread to exit cleanly
+/// after `child.kill()` has been issued. Long enough that the common
+/// path (kill → reader sees EOF → thread exits) completes in full;
+/// short enough that the rare path (ConPTY does not propagate EOF, or
+/// a grandchild keeps the stdout pipe open) does not stall test
+/// teardown.
+const DROP_REAPER_BUDGET: Duration = Duration::from_millis(500);
+
 impl Drop for PtySession {
     fn drop(&mut self) {
         // Best-effort cleanup. Errors are ignored because the child may
         // already be gone, and we are in a Drop.
         let _ = self.child.kill();
-        // The reader thread is detached on drop. We do not join it
-        // because `reader.read()` can block indefinitely on Windows
-        // ConPTY even after the child exits and our parent-side master
-        // is dropped — joining would hang the test process. The thread
-        // owns its half of the shared `Arc<Mutex<Shared>>` and a
-        // cloned PTY reader; both are safe to outlive us briefly. The
-        // OS reaps the thread on process exit.
-        let _ = self.reader_handle.take();
+
+        if let Some(handle) = self.reader_handle.take() {
+            // Bounded join: poll `is_finished` so we can join the
+            // reader thread cleanly when EOF arrives (the common case
+            // on Unix and most Windows ConPTY runs), but never block
+            // Drop forever.
+            //
+            // If the budget elapses and the thread is still in
+            // `reader.read()`, drop the JoinHandle without joining. The
+            // thread owns its own clone of the shared state and the
+            // PTY reader; nothing it touches survives in our hands. It
+            // exits when the underlying read finally returns EOF/Err,
+            // or at process exit.
+            let deadline = Instant::now() + DROP_REAPER_BUDGET;
+            while !handle.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if handle.is_finished() {
+                let _ = handle.join();
+            }
+        }
     }
 }
