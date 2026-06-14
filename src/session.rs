@@ -325,10 +325,11 @@ const DSR6_REPLY: &[u8] = b"\x1b[1;1R";
 /// Scan `s.raw[s.dsr_scanned ..]` for DSR(6) requests and return the
 /// count, advancing `s.dsr_scanned` past the scanned region.
 ///
-/// We start the scan at `dsr_scanned.saturating_sub(DSR6_REQUEST.len()
-/// - 1)` so a sequence that spans the boundary between two `read()`
-/// chunks is still caught. The four bytes `ESC [ 6 n` cannot align
-/// to a regex boundary because we do byte-level matching directly.
+/// We start the scan at
+/// `dsr_scanned.saturating_sub(DSR6_REQUEST.len() - 1)` so a sequence
+/// that spans the boundary between two `read()` chunks is still caught.
+/// Byte-level matching, not regex, because the four bytes
+/// `ESC [ 6 n` are guaranteed contiguous in the stream.
 fn count_and_advance_dsr6(s: &mut Shared) -> usize {
     let overlap = DSR6_REQUEST.len() - 1;
     let start = s.dsr_scanned.saturating_sub(overlap);

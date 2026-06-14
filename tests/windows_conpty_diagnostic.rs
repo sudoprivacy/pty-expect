@@ -43,10 +43,7 @@ fn raw_read_from_cmd_echo() {
         .spawn_command(builder)
         .expect("spawn cmd /c echo");
 
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .expect("clone reader");
+    let mut reader = pair.master.try_clone_reader().expect("clone reader");
 
     // Drop slave per pty-expect's convention.
     drop(pair.slave);

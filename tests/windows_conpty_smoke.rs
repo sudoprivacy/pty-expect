@@ -40,7 +40,11 @@ fn echo_round_trip_through_cmd() {
 fn echo_round_trip_through_powershell() {
     let mut sess = PtySession::spawn(
         "powershell",
-        &["-NoProfile", "-Command", &format!("Write-Output {}", MARKER)],
+        &[
+            "-NoProfile",
+            "-Command",
+            &format!("Write-Output {}", MARKER),
+        ],
     )
     .expect("spawn powershell");
     sess.set_default_timeout(Duration::from_secs(30));
@@ -74,10 +78,7 @@ fn echo_round_trip_through_powershell() {
 #[test]
 #[ignore]
 fn send_line_round_trip_through_cmd_set_p() {
-    let script = format!(
-        "set /p VAL= && echo GOT-%VAL%-{}",
-        MARKER
-    );
+    let script = format!("set /p VAL= && echo GOT-%VAL%-{}", MARKER);
     let mut sess = PtySession::spawn("cmd", &["/c", &script]).expect("spawn");
     sess.set_default_timeout(Duration::from_secs(15));
 
