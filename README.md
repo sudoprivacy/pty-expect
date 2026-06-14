@@ -106,10 +106,26 @@ sess.render(|screen| {
 
 ## Platforms
 
-CI runs the test suite on macOS, Ubuntu Linux, and Windows. The
-PTY backend is `portable-pty`, so the same code runs on all three; the
-test suite covers the cases where the platforms behave differently
-(line endings, `Ctrl+C` semantics, resize signal delivery).
+CI runs `cargo fmt`, `cargo clippy --all-targets`, and `cargo test
+--all-targets` on macOS, Ubuntu Linux, and Windows. The PTY backend
+is `portable-pty`, so the same code is built on all three.
+
+### v0.1 status by platform
+
+| Platform | Compile + clippy | Runtime tests |
+|---|---|---|
+| Linux (Ubuntu) | ✅ | ✅ verified |
+| macOS | ✅ | ✅ verified |
+| Windows | ✅ | ⚠️ deferred to v0.2 |
+
+The Windows compile path is exercised by CI on every commit. The
+Windows runtime path against ConPTY needs focused diagnosis — early
+attempts to drive a child via `cmd /C echo`, then `powershell
+Write-Host`, then `powershell Write-Output` each failed with `expect`
+never seeing the child's output, which points at something deeper
+than command choice. Rather than keep patching the test, we are
+tracking the runtime verification in
+<https://github.com/sudoprivacy/pty-expect/issues/1>.
 
 ## License
 
