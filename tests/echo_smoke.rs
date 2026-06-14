@@ -15,22 +15,31 @@ fn echo_command() -> (&'static str, Vec<&'static str>) {
 
 #[cfg(windows)]
 fn echo_command() -> (&'static str, Vec<&'static str>) {
-    // PowerShell with a deliberate `Start-Sleep` after the write. The
-    // sleep is load-bearing: it keeps the child alive for ~1s after it
-    // emits the line so the parent-side reader can drain the ConPTY
-    // pipe before the child exits and the kernel closes the pipe.
+    // PowerShell with `Write-Output` and a deliberate `Start-Sleep` after.
     //
-    // The `cmd /C echo` shape this code used to take exited within a
-    // millisecond, and on Windows ConPTY that race (fast child exit
-    // vs. reader scheduling) drops the output on the floor: the
-    // reader.read() goes straight to EOF without ever seeing the line.
+    // Two things being load-bearing here:
+    //
+    // 1. `Write-Output` (not `Write-Host`). `Write-Host` writes to the
+    //    PowerShell host's UI via the Console API. On a real terminal
+    //    the terminal *is* the host, so the bytes end up in the user's
+    //    view; on ConPTY the host is ConPTY and the path through to
+    //    the pipe we read from is not guaranteed. `Write-Output` writes
+    //    to the success / stdout stream, which goes through the
+    //    child's stdout handle and reliably reaches the ConPTY pipe.
+    //
+    // 2. `Start-Sleep -Seconds 1`. Keeps the child alive for ~1 s after
+    //    it emits the line so the parent-side reader can drain the
+    //    ConPTY pipe before the child exits and the kernel closes the
+    //    pipe. The previous `cmd /C echo` shape exited within a
+    //    millisecond, and on ConPTY that race (fast child exit vs.
+    //    reader scheduling) drops the output on the floor.
     (
         "powershell",
         vec![
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Write-Host 'hello-from-pty-expect'; Start-Sleep -Seconds 1",
+            "Write-Output 'hello-from-pty-expect'; Start-Sleep -Seconds 1",
         ],
     )
 }
