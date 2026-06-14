@@ -22,7 +22,17 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 const MARKER: &str = "HELLO_FROM_CONPTY_DIAG_MARKER";
 
+/// `#[ignore]` because this test deliberately reproduces the
+/// pre-fix DSR(6) hang to surface diagnostic data — it never
+/// participates in the handshake itself, so `reader.read()` blocks
+/// indefinitely after the first 4 bytes (the DSR(6) request). The
+/// deadline check sits *after* the blocking read, so it never
+/// fires; on CI the test would hang for the runner's full
+/// timeout. Run it manually with:
+///
+///   cargo test --test windows_conpty_diagnostic -- --ignored --nocapture
 #[test]
+#[ignore]
 fn raw_read_from_cmd_echo() {
     let pty_system = native_pty_system();
     let pair = pty_system
