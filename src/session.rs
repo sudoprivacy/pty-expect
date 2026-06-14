@@ -273,13 +273,13 @@ impl Drop for PtySession {
         // Best-effort cleanup. Errors are ignored because the child may
         // already be gone, and we are in a Drop.
         let _ = self.child.kill();
-        if let Some(h) = self.reader_handle.take() {
-            // The reader thread exits when the PTY read returns
-            // EOF/error after the child dies. We give it a moment to
-            // notice; if it has not, drop the JoinHandle without
-            // joining — the thread will outlive us briefly but cannot
-            // touch anything we own.
-            let _ = h.join();
-        }
+        // The reader thread is detached on drop. We do not join it
+        // because `reader.read()` can block indefinitely on Windows
+        // ConPTY even after the child exits and our parent-side master
+        // is dropped — joining would hang the test process. The thread
+        // owns its half of the shared `Arc<Mutex<Shared>>` and a
+        // cloned PTY reader; both are safe to outlive us briefly. The
+        // OS reaps the thread on process exit.
+        let _ = self.reader_handle.take();
     }
 }
