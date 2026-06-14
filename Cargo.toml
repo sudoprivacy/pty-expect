@@ -1,0 +1,29 @@
+[package]
+name = "pty-expect"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Drive interactive CLI programs through a real PTY (Unix + Windows ConPTY) with VT100-rendered assertions."
+repository = "https://github.com/sudoprivacy/pty-expect"
+homepage = "https://github.com/sudoprivacy/pty-expect"
+readme = "README.md"
+keywords = ["pty", "expect", "test", "terminal", "vt100"]
+categories = ["development-tools::testing", "command-line-interface"]
+rust-version = "1.75"
+
+[dependencies]
+# Cross-platform PTY (Unix /dev/pty, Windows ConPTY). Powers wezterm.
+portable-pty = "0.9"
+
+# VT100 / ANSI escape sequence interpreter — turns the raw byte stream
+# from the PTY into a row x col grid of styled cells, exactly the way a
+# user's terminal emulator would render it. Pinned at our fork so we
+# can patch immediately if a behavioural quirk surfaces (the upstream
+# crate is stable but dormant).
+vt100 = { git = "https://github.com/sudoprivacy/vt100-rust", branch = "main" }
+
+regex = "1"
+thiserror = "1"
+
+[dev-dependencies]
+# nothing yet — self-tests use only stdlib + this crate
