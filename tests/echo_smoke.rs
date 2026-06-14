@@ -20,6 +20,7 @@
 //!
 //! Tracked in <https://github.com/sudoprivacy/pty-expect/issues/1>.
 
+#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -28,8 +29,8 @@ use pty_expect::PtySession;
 #[cfg(unix)]
 #[test]
 fn echo_round_trip() {
-    let mut sess = PtySession::spawn("sh", &["-c", "echo hello-from-pty-expect && cat"])
-        .expect("spawn");
+    let mut sess =
+        PtySession::spawn("sh", &["-c", "echo hello-from-pty-expect && cat"]).expect("spawn");
     sess.set_default_timeout(Duration::from_secs(10));
     sess.expect(r"hello-from-pty-expect").expect("expect echo");
 }
