@@ -37,7 +37,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// reader thread.
 pub struct PtySession {
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    writer: Box<dyn Write + Send>,
+    /// Shared writer so the background reader thread can reply to
+    /// terminal-protocol queries (notably Windows ConPTY's DSR(6)
+    /// cursor-position request) out of band, without coordinating
+    /// with foreground `send_*` callers. Lock is uncontended in
+    /// practice — `send_*` only touches it from the foreground and
+    /// the reader thread only when ConPTY actually asks.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     shared: Arc<Mutex<Shared>>,
     reader_handle: Option<JoinHandle<()>>,
@@ -54,6 +60,13 @@ struct Shared {
     /// "new" output, matching the behaviour users expect from
     /// pexpect-style libraries.
     consumed: usize,
+    /// How far into `raw` the reader thread has already scanned for
+    /// terminal-protocol queries (DSR(6) cursor-position requests
+    /// from ConPTY). Independent of `consumed` because the reader
+    /// has to respond to these to keep ConPTY's initialization
+    /// handshake moving, regardless of whether the foreground
+    /// caller has consumed any bytes yet.
+    dsr_scanned: usize,
     /// VT100 parser; the rendered screen is `parser.screen()`.
     parser: vt100::Parser,
     /// Set by the reader thread when the PTY read returns 0 or errors.
@@ -105,11 +118,15 @@ impl PtySession {
         let shared = Arc::new(Mutex::new(Shared {
             raw: Vec::new(),
             consumed: 0,
+            dsr_scanned: 0,
             parser: vt100::Parser::new(DEFAULT_ROWS, DEFAULT_COLS, 0),
             eof: false,
         }));
 
+        let writer = Arc::new(Mutex::new(writer));
+
         let shared_for_thread = Arc::clone(&shared);
+        let writer_for_thread = Arc::clone(&writer);
         let reader_handle = thread::spawn(move || {
             let mut chunk = [0u8; 4096];
             loop {
@@ -120,9 +137,22 @@ impl PtySession {
                         break;
                     }
                     Ok(n) => {
-                        let mut s = shared_for_thread.lock().unwrap();
-                        s.raw.extend_from_slice(&chunk[..n]);
-                        s.parser.process(&chunk[..n]);
+                        // Append bytes + count any new DSR(6) requests
+                        // from ConPTY that we need to answer to unblock
+                        // its initialization handshake.
+                        let dsr_responses = {
+                            let mut s = shared_for_thread.lock().unwrap();
+                            s.raw.extend_from_slice(&chunk[..n]);
+                            s.parser.process(&chunk[..n]);
+                            count_and_advance_dsr6(&mut s)
+                        };
+                        if dsr_responses > 0 {
+                            let mut w = writer_for_thread.lock().unwrap();
+                            for _ in 0..dsr_responses {
+                                let _ = w.write_all(DSR6_REPLY);
+                            }
+                            let _ = w.flush();
+                        }
                     }
                     Err(_) => {
                         let mut s = shared_for_thread.lock().unwrap();
@@ -151,16 +181,18 @@ impl PtySession {
 
     /// Send `text` followed by `\n` to the child's stdin.
     pub fn send_line(&mut self, text: &str) -> Result<()> {
-        self.writer.write_all(text.as_bytes())?;
-        self.writer.write_all(b"\n")?;
-        self.writer.flush()?;
+        let mut w = self.writer.lock().unwrap();
+        w.write_all(text.as_bytes())?;
+        w.write_all(b"\n")?;
+        w.flush()?;
         Ok(())
     }
 
     /// Send `text` as-is to the child's stdin (no newline appended).
     pub fn send(&mut self, text: &str) -> Result<()> {
-        self.writer.write_all(text.as_bytes())?;
-        self.writer.flush()?;
+        let mut w = self.writer.lock().unwrap();
+        w.write_all(text.as_bytes())?;
+        w.flush()?;
         Ok(())
     }
 
@@ -175,8 +207,9 @@ impl PtySession {
             return Err(Error::InvalidCtrlChar(c));
         }
         let byte = (upper as u8) - b'A' + 1;
-        self.writer.write_all(&[byte])?;
-        self.writer.flush()?;
+        let mut w = self.writer.lock().unwrap();
+        w.write_all(&[byte])?;
+        w.flush()?;
         Ok(())
     }
 
@@ -275,6 +308,43 @@ impl PtySession {
 /// a grandchild keeps the stdout pipe open) does not stall test
 /// teardown.
 const DROP_REAPER_BUDGET: Duration = Duration::from_millis(500);
+
+/// DSR(6) cursor-position-report request that ConPTY sends during
+/// initialization. CSI `6 n` = "report cursor position". Three bytes
+/// on the wire after the ESC: `[`, `6`, `n`.
+const DSR6_REQUEST: &[u8] = b"\x1b[6n";
+
+/// Our reply to a DSR(6): cursor at row 1, column 1.
+///
+/// The actual values are not load-bearing — ConPTY uses the response
+/// purely as a liveness signal that a real terminal emulator is
+/// attached. We pick (1,1) because it is the most defensible "we are
+/// a brand-new terminal" answer.
+const DSR6_REPLY: &[u8] = b"\x1b[1;1R";
+
+/// Scan `s.raw[s.dsr_scanned ..]` for DSR(6) requests and return the
+/// count, advancing `s.dsr_scanned` past the scanned region.
+///
+/// We start the scan at `dsr_scanned.saturating_sub(DSR6_REQUEST.len()
+/// - 1)` so a sequence that spans the boundary between two `read()`
+/// chunks is still caught. The four bytes `ESC [ 6 n` cannot align
+/// to a regex boundary because we do byte-level matching directly.
+fn count_and_advance_dsr6(s: &mut Shared) -> usize {
+    let overlap = DSR6_REQUEST.len() - 1;
+    let start = s.dsr_scanned.saturating_sub(overlap);
+    let mut count = 0;
+    let mut i = start;
+    while i + DSR6_REQUEST.len() <= s.raw.len() {
+        if &s.raw[i..i + DSR6_REQUEST.len()] == DSR6_REQUEST {
+            count += 1;
+            i += DSR6_REQUEST.len();
+        } else {
+            i += 1;
+        }
+    }
+    s.dsr_scanned = s.raw.len();
+    count
+}
 
 impl Drop for PtySession {
     fn drop(&mut self) {
