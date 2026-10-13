@@ -44,7 +44,7 @@ pub struct PtySession {
     /// practice — `send_*` only touches it from the foreground and
     /// the reader thread only when ConPTY actually asks.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    master: Box<dyn MasterPty + Send>,
+    master: Option<Box<dyn MasterPty + Send>>,
     shared: Arc<Mutex<Shared>>,
     reader_handle: Option<JoinHandle<()>>,
     default_timeout: Duration,
@@ -166,7 +166,7 @@ impl PtySession {
         Ok(Self {
             child,
             writer,
-            master: pair.master,
+            master: Some(pair.master),
             shared,
             reader_handle: Some(reader_handle),
             default_timeout: DEFAULT_TIMEOUT,
@@ -217,6 +217,8 @@ impl PtySession {
     /// Unix or the equivalent ConPTY notification on Windows.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.master
+            .as_ref()
+            .ok_or_else(|| Error::PtyResize("PTY is closed".to_string()))?
             .resize(PtySize {
                 rows,
                 cols,
@@ -278,15 +280,36 @@ impl PtySession {
         f(&wrapper)
     }
 
-    /// Wait for the child to exit and return its exit code.
+    /// Wait for the child to exit and for its final output to reach the parser.
     ///
     /// Uses the default timeout. Calls to `expect_eof` consume the
-    /// child handle, so this is the last operation on the session.
+    /// PTY. The final screen can still be inspected with `render`.
     pub fn expect_eof(&mut self) -> Result<u32> {
         let deadline = Instant::now() + self.default_timeout;
         loop {
             match self.child.try_wait() {
-                Ok(Some(status)) => return Ok(status.exit_code()),
+                Ok(Some(status)) => {
+                    // ConPTY can retain its output pipe after the child exits.
+                    // Closing the master ends that stream while the independent
+                    // reader continues draining it; never race process exit
+                    // against the final error or result displayed by the child.
+                    drop(self.master.take());
+                    while !self.shared.lock().unwrap().eof {
+                        if Instant::now() >= deadline {
+                            return Err(Error::Timeout(
+                                self.default_timeout,
+                                "<PTY output EOF>".to_string(),
+                            ));
+                        }
+                        thread::sleep(POLL_INTERVAL);
+                    }
+                    if let Some(reader) = self.reader_handle.take() {
+                        reader
+                            .join()
+                            .map_err(|_| Error::Wait("PTY reader panicked".to_string()))?;
+                    }
+                    return Ok(status.exit_code());
+                }
                 Ok(None) => {}
                 Err(e) => return Err(Error::Wait(e.to_string())),
             }
