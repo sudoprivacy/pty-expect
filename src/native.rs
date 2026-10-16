@@ -79,7 +79,7 @@ pub(crate) fn spawn(command: &str, args: &[&str], size: PtySize) -> Result<Spawn
 /// Reap within the existing cleanup budget while the caller still owns the
 /// terminal. A cached exit must never send a signal to a recycled PID.
 pub(crate) fn terminate(child: &mut (dyn Child + Send + Sync)) -> Instant {
-    if !matches!(child.try_wait(), Ok(None)) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
         return Instant::now() + REAPER_BUDGET;
     }
     let _ = child.kill();
