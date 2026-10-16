@@ -110,12 +110,18 @@ CI runs `cargo fmt`, `cargo clippy --all-targets`, and `cargo test
 --all-targets` on macOS, Ubuntu Linux, and Windows. The PTY backend
 is `portable-pty`, so the same code is built on all three.
 
-On macOS, one shared lifecycle lock coordinates native PTY allocation and
-release of master, slave, reader and writer handles. Native allocation can
-otherwise fail while other callers create or release terminals. Child startup
-and terminal I/O remain concurrent. The native-shell integration drives 16
-callers through 4,000 sessions, including input/output, normal exit and dropping
-a running child.
+On macOS, one shared lifecycle lock coordinates the complete native creation
+transition (allocation, child attachment and stream setup) and release of master,
+slave, reader and writer handles. Process execution and terminal I/O remain
+concurrent. Teardown reaps a terminated child before releasing the terminal,
+sharing the existing 500 ms cleanup budget with the reader's final drain. An
+already reaped child is never signalled again.
+
+The native-shell integration drives 16 callers through 4,000 sessions, including
+input/output, normal exit and dropping a running child. Another real-process
+case requires teardown to reap a child that ignores SIGHUP. macOS CI additionally
+runs both cases in four fresh controllers; every controller must pass, and the
+first failure stops the job.
 
 ### v0.1 status by platform
 
