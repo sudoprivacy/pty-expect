@@ -1,6 +1,6 @@
 [package]
 name = "pty-expect"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Drive interactive CLI programs through a real PTY (Unix + Windows ConPTY) with VT100-rendered assertions."

@@ -25,6 +25,11 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// to feel responsive in tests, long enough to keep CPU near zero.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+// Simultaneous macOS libc openpty calls can fail with errno -6. Serialize
+// native allocation while keeping child startup and session I/O concurrent.
+#[cfg(target_os = "macos")]
+static PTY_ALLOCATION: Mutex<()> = Mutex::new(());
+
 /// One PTY-backed child process.
 ///
 /// Created via [`PtySession::spawn`]. A background reader thread
@@ -82,14 +87,20 @@ impl PtySession {
     /// documentation on `portable_pty::CommandBuilder` for details).
     pub fn spawn(cmd: &str, args: &[&str]) -> Result<Self> {
         let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: DEFAULT_ROWS,
-                cols: DEFAULT_COLS,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| Error::PtyOpen(e.to_string()))?;
+        let pair = {
+            #[cfg(target_os = "macos")]
+            let _allocation = PTY_ALLOCATION
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pty_system
+                .openpty(PtySize {
+                    rows: DEFAULT_ROWS,
+                    cols: DEFAULT_COLS,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| Error::PtyOpen(e.to_string()))?
+        };
 
         let mut builder = CommandBuilder::new(cmd);
         for arg in args {
