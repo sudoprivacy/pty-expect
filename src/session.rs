@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use regex::Regex;
 
 use crate::error::{Error, Result};
+use crate::native::{self, Resource};
 use crate::screen::Screen;
 
 /// Initial PTY geometry. Matches the typical default for a terminal
@@ -24,11 +25,6 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the expect / wait loops sleep between checks. Short enough
 /// to feel responsive in tests, long enough to keep CPU near zero.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-// Simultaneous macOS libc openpty calls can fail with errno -6. Serialize
-// native allocation while keeping child startup and session I/O concurrent.
-#[cfg(target_os = "macos")]
-static PTY_ALLOCATION: Mutex<()> = Mutex::new(());
 
 /// One PTY-backed child process.
 ///
@@ -48,8 +44,8 @@ pub struct PtySession {
     /// with foreground `send_*` callers. Lock is uncontended in
     /// practice — `send_*` only touches it from the foreground and
     /// the reader thread only when ConPTY actually asks.
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    master: Option<Box<dyn MasterPty + Send>>,
+    writer: Arc<Mutex<Resource<Box<dyn Write + Send>>>>,
+    master: Option<Resource<Box<dyn MasterPty + Send>>>,
     shared: Arc<Mutex<Shared>>,
     reader_handle: Option<JoinHandle<()>>,
     default_timeout: Duration,
@@ -86,45 +82,39 @@ impl PtySession {
     /// terminal-state variables that would confuse the child (see the
     /// documentation on `portable_pty::CommandBuilder` for details).
     pub fn spawn(cmd: &str, args: &[&str]) -> Result<Self> {
-        let pty_system = native_pty_system();
-        let pair = {
-            #[cfg(target_os = "macos")]
-            let _allocation = PTY_ALLOCATION
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            pty_system
-                .openpty(PtySize {
-                    rows: DEFAULT_ROWS,
-                    cols: DEFAULT_COLS,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .map_err(|e| Error::PtyOpen(e.to_string()))?
-        };
+        let pair = native::allocate(PtySize {
+            rows: DEFAULT_ROWS,
+            cols: DEFAULT_COLS,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let master = native::own(pair.master);
+        let slave = native::own(pair.slave);
 
         let mut builder = CommandBuilder::new(cmd);
         for arg in args {
             builder.arg(arg);
         }
 
-        let child = pair
-            .slave
+        let child = slave
             .spawn_command(builder)
             .map_err(|e| Error::Spawn(e.to_string()))?;
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| Error::PtyOpen(e.to_string()))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| Error::PtyOpen(e.to_string()))?;
+        let mut reader = native::own(
+            master
+                .try_clone_reader()
+                .map_err(|e| Error::PtyOpen(e.to_string()))?,
+        );
+        let writer = native::own(
+            master
+                .take_writer()
+                .map_err(|e| Error::PtyOpen(e.to_string()))?,
+        );
 
         // Drop the slave side now that the child owns its end. Keeping
         // it open in the parent confuses some shells about whether the
         // session is interactive.
-        drop(pair.slave);
+        drop(slave);
 
         let shared = Arc::new(Mutex::new(Shared {
             raw: Vec::new(),
@@ -177,7 +167,7 @@ impl PtySession {
         Ok(Self {
             child,
             writer,
-            master: Some(pair.master),
+            master: Some(master),
             shared,
             reader_handle: Some(reader_handle),
             default_timeout: DEFAULT_TIMEOUT,

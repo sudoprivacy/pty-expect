@@ -110,11 +110,12 @@ CI runs `cargo fmt`, `cargo clippy --all-targets`, and `cargo test
 --all-targets` on macOS, Ubuntu Linux, and Windows. The PTY backend
 is `portable-pty`, so the same code is built on all three.
 
-On macOS, one shared lock serializes native PTY pair allocation. Concurrent
-`libc::openpty` callers can otherwise fail with errno -6 before a child starts.
-Child startup, terminal I/O and teardown remain concurrent. The native-shell
-integration drives 16 callers through 800 sessions, including input/output,
-normal exit and dropping a running child.
+On macOS, one shared lifecycle lock coordinates native PTY allocation and
+release of master, slave, reader and writer handles. Native allocation can
+otherwise fail while other callers create or release terminals. Child startup
+and terminal I/O remain concurrent. The native-shell integration drives 16
+callers through 800 sessions, including input/output, normal exit and dropping
+a running child.
 
 ### v0.1 status by platform
 
