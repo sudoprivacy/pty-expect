@@ -47,7 +47,7 @@ fn concurrent_native_shells_preserve_input_across_exit_and_drop() {
             thread::spawn(move || {
                 barrier.wait();
                 let mut failures = Vec::new();
-                for round in 0..50 {
+                for round in 0..250 {
                     if let Err(error) = round_trip(worker, round) {
                         failures.push(format!("worker {worker}, round {round}: {error}"));
                     }

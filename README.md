@@ -114,7 +114,7 @@ On macOS, one shared lifecycle lock coordinates native PTY allocation and
 release of master, slave, reader and writer handles. Native allocation can
 otherwise fail while other callers create or release terminals. Child startup
 and terminal I/O remain concurrent. The native-shell integration drives 16
-callers through 800 sessions, including input/output, normal exit and dropping
+callers through 4,000 sessions, including input/output, normal exit and dropping
 a running child.
 
 ### v0.1 status by platform
