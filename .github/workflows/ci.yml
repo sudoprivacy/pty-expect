@@ -52,3 +52,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-targets
+      - name: Verify fresh native PTY controllers
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for controller in 1 2 3 4; do
+            echo "Fresh native controller ${controller}/4"
+            cargo test --test child_reaping --test concurrent_spawn
+          done
