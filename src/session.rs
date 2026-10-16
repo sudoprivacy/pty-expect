@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use portable_pty::{CommandBuilder, MasterPty, PtySize};
+use portable_pty::{MasterPty, PtySize};
 use regex::Regex;
 
 use crate::error::{Error, Result};
-use crate::native::{self, Resource};
+use crate::native::{self, Resource, POLL_INTERVAL};
 use crate::screen::Screen;
 
 /// Initial PTY geometry. Matches the typical default for a terminal
@@ -21,10 +21,6 @@ const DEFAULT_COLS: u16 = 80;
 
 /// Default time we wait for an expected pattern before giving up.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// How long the expect / wait loops sleep between checks. Short enough
-/// to feel responsive in tests, long enough to keep CPU near zero.
-const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// One PTY-backed child process.
 ///
@@ -82,39 +78,21 @@ impl PtySession {
     /// terminal-state variables that would confuse the child (see the
     /// documentation on `portable_pty::CommandBuilder` for details).
     pub fn spawn(cmd: &str, args: &[&str]) -> Result<Self> {
-        let pair = native::allocate(PtySize {
-            rows: DEFAULT_ROWS,
-            cols: DEFAULT_COLS,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
-        let master = native::own(pair.master);
-        let slave = native::own(pair.slave);
-
-        let mut builder = CommandBuilder::new(cmd);
-        for arg in args {
-            builder.arg(arg);
-        }
-
-        let child = slave
-            .spawn_command(builder)
-            .map_err(|e| Error::Spawn(e.to_string()))?;
-
-        let mut reader = native::own(
-            master
-                .try_clone_reader()
-                .map_err(|e| Error::PtyOpen(e.to_string()))?,
-        );
-        let writer = native::own(
-            master
-                .take_writer()
-                .map_err(|e| Error::PtyOpen(e.to_string()))?,
-        );
-
-        // Drop the slave side now that the child owns its end. Keeping
-        // it open in the parent confuses some shells about whether the
-        // session is interactive.
-        drop(slave);
+        let native::Spawned {
+            child,
+            master,
+            mut reader,
+            writer,
+        } = native::spawn(
+            cmd,
+            args,
+            PtySize {
+                rows: DEFAULT_ROWS,
+                cols: DEFAULT_COLS,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        )?;
 
         let shared = Arc::new(Mutex::new(Shared {
             raw: Vec::new(),
@@ -325,14 +303,6 @@ impl PtySession {
     }
 }
 
-/// Maximum time `Drop` waits for the reader thread to exit cleanly
-/// after `child.kill()` has been issued. Long enough that the common
-/// path (kill → reader sees EOF → thread exits) completes in full;
-/// short enough that the rare path (ConPTY does not propagate EOF, or
-/// a grandchild keeps the stdout pipe open) does not stall test
-/// teardown.
-const DROP_REAPER_BUDGET: Duration = Duration::from_millis(500);
-
 /// DSR(6) cursor-position-report request that ConPTY sends during
 /// initialization. CSI `6 n` = "report cursor position". Three bytes
 /// on the wire after the ESC: `[`, `6`, `n`.
@@ -373,9 +343,9 @@ fn count_and_advance_dsr6(s: &mut Shared) -> usize {
 
 impl Drop for PtySession {
     fn drop(&mut self) {
-        // Best-effort cleanup. Errors are ignored because the child may
-        // already be gone, and we are in a Drop.
-        let _ = self.child.kill();
+        // Process exit precedes terminal recycling. The existing cleanup
+        // budget also bounds the independent reader's final drain.
+        let deadline = native::terminate(self.child.as_mut());
 
         if let Some(handle) = self.reader_handle.take() {
             // Bounded join: poll `is_finished` so we can join the
@@ -389,9 +359,8 @@ impl Drop for PtySession {
             // PTY reader; nothing it touches survives in our hands. It
             // exits when the underlying read finally returns EOF/Err,
             // or at process exit.
-            let deadline = Instant::now() + DROP_REAPER_BUDGET;
             while !handle.is_finished() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(10));
+                thread::sleep(POLL_INTERVAL);
             }
             if handle.is_finished() {
                 let _ = handle.join();
