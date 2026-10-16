@@ -30,6 +30,7 @@
 //! ```
 
 mod error;
+mod native;
 mod screen;
 mod session;
 
