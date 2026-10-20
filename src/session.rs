@@ -301,6 +301,16 @@ impl PtySession {
             thread::sleep(POLL_INTERVAL);
         }
     }
+
+    /// The operating-system process id of the spawned child, or `None`
+    /// once the child has been reaped. This reads through to the child
+    /// handle every call, so a caller that needs a stable id (for example
+    /// to signal the process) should take it right after `spawn` and keep
+    /// it, rather than re-reading it after the child may have exited.
+    #[must_use]
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.process_id()
+    }
 }
 
 /// DSR(6) cursor-position-report request that ConPTY sends during
