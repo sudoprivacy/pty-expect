@@ -357,6 +357,11 @@ impl Drop for PtySession {
         // budget also bounds the independent reader's final drain.
         let deadline = native::terminate(self.child.as_mut());
 
+        // ConPTY retains its output stream while the master is open. Release
+        // it before joining, as expect_eof does; the independent reader keeps
+        // draining while the terminal closes.
+        drop(self.master.take());
+
         if let Some(handle) = self.reader_handle.take() {
             // Bounded join: poll `is_finished` so we can join the
             // reader thread cleanly when EOF arrives (the common case
