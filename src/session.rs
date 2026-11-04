@@ -78,6 +78,18 @@ impl PtySession {
     /// terminal-state variables that would confuse the child (see the
     /// documentation on `portable_pty::CommandBuilder` for details).
     pub fn spawn(cmd: &str, args: &[&str]) -> Result<Self> {
+        Self::spawn_with_size(cmd, args, DEFAULT_ROWS, DEFAULT_COLS)
+    }
+
+    /// Spawn with native PTY and screen dimensions set before the child starts.
+    ///
+    /// Unlike calling [`Self::resize`] after [`Self::spawn`], this lets a child
+    /// safely query its initial geometry during startup. `rows` and `cols`
+    /// must both be nonzero. Process ownership and I/O match [`Self::spawn`].
+    pub fn spawn_with_size(cmd: &str, args: &[&str], rows: u16, cols: u16) -> Result<Self> {
+        if rows == 0 || cols == 0 {
+            return Err(Error::PtyOpen("PTY dimensions must be nonzero".to_string()));
+        }
         let native::Spawned {
             child,
             master,
@@ -87,8 +99,8 @@ impl PtySession {
             cmd,
             args,
             PtySize {
-                rows: DEFAULT_ROWS,
-                cols: DEFAULT_COLS,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             },
@@ -98,7 +110,7 @@ impl PtySession {
             raw: Vec::new(),
             consumed: 0,
             dsr_scanned: 0,
-            parser: vt100::Parser::new(DEFAULT_ROWS, DEFAULT_COLS, 0),
+            parser: vt100::Parser::new(rows, cols, 0),
             eof: false,
         }));
 

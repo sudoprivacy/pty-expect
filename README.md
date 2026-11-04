@@ -85,6 +85,12 @@ fn drive_echo() -> Result<(), pty_expect::Error> {
 
 ## Asserting against the rendered screen
 
+Use `PtySession::spawn_with_size(command, args, rows, cols)` when startup must
+observe a specific terminal size. It creates both the native PTY and the
+VT100 screen at that size before launching the child; resizing after `spawn`
+can race the child's first geometry query. Ordinary `spawn` keeps its 24x80
+default. Later `resize(rows, cols)` calls still exercise a running child.
+
 For checks that depend on cursor position, colour, or "what cell
 contains what character" — say, a status line that overwrites itself
 every turn — drop down to the VT100-rendered view:
