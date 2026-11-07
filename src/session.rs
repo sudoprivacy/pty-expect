@@ -35,11 +35,11 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct PtySession {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     /// Shared writer so the background reader thread can reply to
-    /// terminal-protocol queries (notably Windows ConPTY's DSR(6)
-    /// cursor-position request) out of band, without coordinating
+    /// terminal-protocol queries (cursor position and device attributes)
+    /// out of band, without coordinating
     /// with foreground `send_*` callers. Lock is uncontended in
     /// practice — `send_*` only touches it from the foreground and
-    /// the reader thread only when ConPTY actually asks.
+    /// the reader thread only when the terminal peer actually asks.
     writer: Arc<Mutex<Resource<Box<dyn Write + Send>>>>,
     master: Option<Resource<Box<dyn MasterPty + Send>>>,
     shared: Arc<Mutex<Shared>>,
@@ -58,12 +58,11 @@ struct Shared {
     /// pexpect-style libraries.
     consumed: usize,
     /// How far into `raw` the reader thread has already scanned for
-    /// terminal-protocol queries (DSR(6) cursor-position requests
-    /// from ConPTY). Independent of `consumed` because the reader
-    /// has to respond to these to keep ConPTY's initialization
+    /// terminal-protocol queries. Independent of `consumed` because the
+    /// reader has to respond to these to keep ConPTY's initialization
     /// handshake moving, regardless of whether the foreground
     /// caller has consumed any bytes yet.
-    dsr_scanned: usize,
+    terminal_scanned: usize,
     /// VT100 parser; the rendered screen is `parser.screen()`.
     parser: vt100::Parser,
     /// Set by the reader thread when the PTY read returns 0 or errors.
@@ -109,7 +108,7 @@ impl PtySession {
         let shared = Arc::new(Mutex::new(Shared {
             raw: Vec::new(),
             consumed: 0,
-            dsr_scanned: 0,
+            terminal_scanned: 0,
             parser: vt100::Parser::new(rows, cols, 0),
             eof: false,
         }));
@@ -128,19 +127,18 @@ impl PtySession {
                         break;
                     }
                     Ok(n) => {
-                        // Append bytes + count any new DSR(6) requests
-                        // from ConPTY that we need to answer to unblock
-                        // its initialization handshake.
-                        let dsr_responses = {
+                        // Reply in wire order, including requests split across reads.
+                        // ConPTY waits for DA1 after receiving the cursor position.
+                        let replies = {
                             let mut s = shared_for_thread.lock().unwrap();
                             s.raw.extend_from_slice(&chunk[..n]);
                             s.parser.process(&chunk[..n]);
-                            count_and_advance_dsr6(&mut s)
+                            terminal_replies(&mut s)
                         };
-                        if dsr_responses > 0 {
+                        if !replies.is_empty() {
                             let mut w = writer_for_thread.lock().unwrap();
-                            for _ in 0..dsr_responses {
-                                let _ = w.write_all(DSR6_REPLY);
+                            for reply in replies {
+                                let _ = w.write_all(reply);
                             }
                             let _ = w.flush();
                         }
@@ -325,42 +323,36 @@ impl PtySession {
     }
 }
 
-/// DSR(6) cursor-position-report request that ConPTY sends during
-/// initialization. CSI `6 n` = "report cursor position". Three bytes
-/// on the wire after the ESC: `[`, `6`, `n`.
-const DSR6_REQUEST: &[u8] = b"\x1b[6n";
+/// Model the VT100 screen: cursor at its initial origin, no advanced DA1 features.
+/// ConPTY sends DSR(6) followed by DA1 and waits for the latter before startup.
+const TERMINAL_QUERIES: &[(&[u8], &[u8])] = &[
+    (b"\x1b[6n", b"\x1b[1;1R"),
+    (b"\x1b[c", b"\x1b[?1;0c"),
+    (b"\x1b[0c", b"\x1b[?1;0c"),
+];
 
-/// Our reply to a DSR(6): cursor at row 1, column 1.
-///
-/// The actual values are not load-bearing — ConPTY uses the response
-/// purely as a liveness signal that a real terminal emulator is
-/// attached. We pick (1,1) because it is the most defensible "we are
-/// a brand-new terminal" answer.
-const DSR6_REPLY: &[u8] = b"\x1b[1;1R";
-
-/// Scan `s.raw[s.dsr_scanned ..]` for DSR(6) requests and return the
-/// count, advancing `s.dsr_scanned` past the scanned region.
-///
-/// We start the scan at
-/// `dsr_scanned.saturating_sub(DSR6_REQUEST.len() - 1)` so a sequence
-/// that spans the boundary between two `read()` chunks is still caught.
-/// Byte-level matching, not regex, because the four bytes
-/// `ESC [ 6 n` are guaranteed contiguous in the stream.
-fn count_and_advance_dsr6(s: &mut Shared) -> usize {
-    let overlap = DSR6_REQUEST.len() - 1;
-    let start = s.dsr_scanned.saturating_sub(overlap);
-    let mut count = 0;
-    let mut i = start;
-    while i + DSR6_REQUEST.len() <= s.raw.len() {
-        if &s.raw[i..i + DSR6_REQUEST.len()] == DSR6_REQUEST {
-            count += 1;
-            i += DSR6_REQUEST.len();
-        } else {
-            i += 1;
+/// Scan new bytes plus an incomplete query suffix, replying exactly once in order.
+fn terminal_replies(s: &mut Shared) -> Vec<&'static [u8]> {
+    let previous = s.terminal_scanned;
+    let overlap = TERMINAL_QUERIES
+        .iter()
+        .map(|(query, _)| query.len() - 1)
+        .max()
+        .unwrap();
+    let mut replies = Vec::new();
+    for index in previous.saturating_sub(overlap)..s.raw.len() {
+        if s.raw[index] != b'\x1b' {
+            continue;
+        }
+        for &(query, reply) in TERMINAL_QUERIES {
+            let end = index + query.len();
+            if end > previous && s.raw.get(index..end) == Some(query) {
+                replies.push(reply);
+            }
         }
     }
-    s.dsr_scanned = s.raw.len();
-    count
+    s.terminal_scanned = s.raw.len();
+    replies
 }
 
 impl Drop for PtySession {

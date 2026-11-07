@@ -129,22 +129,20 @@ case requires teardown to reap a child that ignores SIGHUP. macOS CI additionall
 runs both cases in four fresh controllers; every controller must pass, and the
 first failure stops the job.
 
-### v0.1 status by platform
+### Native terminal handshake
 
-| Platform | Compile + clippy | Runtime tests |
-|---|---|---|
-| Linux (Ubuntu) | ✅ | ✅ verified |
-| macOS | ✅ | ✅ verified |
-| Windows | ✅ | ⚠️ deferred to v0.2 |
+The reader answers cursor-position queries (`CSI 6 n`) and primary device
+attributes (`CSI c` / `CSI 0 c`) in order, once per request, including requests
+split across reads. DA1 reports a basic VT100 without advanced features.
+This completes ConPTY startup without its fixed three-second DA1 wait.
+See [Microsoft's ConPTY startup sequence](https://github.com/microsoft/terminal/blob/v1.25.1171.0/src/host/VtIo.cpp#L179-L209).
 
-The Windows compile path is exercised by CI on every commit. The
-Windows runtime path against ConPTY needs focused diagnosis — early
-attempts to drive a child via `cmd /C echo`, then `powershell
-Write-Host`, then `powershell Write-Output` each failed with `expect`
-never seeing the child's output, which points at something deeper
-than command choice. Rather than keep patching the test, we are
-tracking the runtime verification in
-<https://github.com/sudoprivacy/pty-expect/issues/1>.
+All three CI platforms run real native process tests. Windows covers cmd,
+PowerShell, initial geometry, final-output draining and four fresh native
+startup processes, each required to become ready within two seconds. Linux
+and macOS additionally exercise every split point of cursor/DA1 queries,
+batched requests and duplicate-response detection through a real raw PTY.
+The existing process cleanup and macOS concurrency checks remain required.
 
 ## License
 
