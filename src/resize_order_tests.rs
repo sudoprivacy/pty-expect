@@ -22,6 +22,8 @@ impl ObservedMaster {
     fn command(&self, command: &[u8]) -> anyhow::Result<()> {
         let mut writer = self.writer.lock().unwrap();
         writer.write_all(command)?;
+        // ConPTY's cooked console input accepts Enter as carriage return.
+        writer.write_all(if cfg!(windows) { b"\r" } else { b"\n" })?;
         writer.flush()?;
         Ok(())
     }
@@ -33,12 +35,12 @@ impl MasterPty for ObservedMaster {
             anyhow::bail!("CONTROLLED_RESIZE_REFUSAL");
         }
         if matches!(self.mode, Mode::Backpressure) {
-            self.command(b"flood\n")?;
+            self.command(b"flood")?;
             thread::sleep(Duration::from_millis(100));
         }
         self.inner.resize(size)?;
         if matches!(self.mode, Mode::ObserveNewFrame) {
-            self.command(b"paint\n")?;
+            self.command(b"paint")?;
             let deadline = Instant::now() + Duration::from_millis(500);
             while Instant::now() < deadline {
                 match self.shared.try_lock() {
