@@ -130,3 +130,14 @@ impl<T> Drop for Resource<T> {
         drop(self.0.take());
     }
 }
+
+// Test wrappers replace one owned master without nesting lifecycle resources.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn unown_for_test<T>(mut value: Resource<T>) -> T {
+    value.0.take().expect("native resource already released")
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+pub(crate) fn unown_for_test<T>(value: Resource<T>) -> T {
+    value
+}

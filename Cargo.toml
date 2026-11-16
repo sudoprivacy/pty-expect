@@ -26,4 +26,4 @@ regex = "1"
 thiserror = "1"
 
 [dev-dependencies]
-# nothing yet — self-tests use only stdlib + this crate
+anyhow = "1" # MasterPty test wrappers use its existing error type.
