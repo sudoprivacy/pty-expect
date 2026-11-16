@@ -205,6 +205,9 @@ impl PtySession {
     /// Resize the PTY to `rows` x `cols`. The child sees `SIGWINCH` on
     /// Unix or the equivalent ConPTY notification on Windows.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        // Native resize may publish output before it returns. Keep the reader
+        // from parsing that output with the previous viewport dimensions.
+        let mut s = self.shared.lock().unwrap();
         self.master
             .as_ref()
             .ok_or_else(|| Error::PtyResize("PTY is closed".to_string()))?
@@ -215,7 +218,6 @@ impl PtySession {
                 pixel_height: 0,
             })
             .map_err(|e| Error::PtyResize(e.to_string()))?;
-        let mut s = self.shared.lock().unwrap();
         s.parser.screen_mut().set_size(rows, cols);
         Ok(())
     }
@@ -387,3 +389,7 @@ impl Drop for PtySession {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "resize_order_tests.rs"]
+mod resize_order_tests;
