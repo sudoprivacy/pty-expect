@@ -32,9 +32,13 @@ fn conpty_startup_completes_without_the_three_second_da1_timeout() {
     }
 }
 
+/// Each query is sent with the cursor here, so a cursor report is exact.
+#[cfg(unix)]
+const CURSOR_SPOT: &[u8] = b"\x1b[5;9H";
+
 #[cfg(unix)]
 const QUERIES: &[(&[u8], &[u8])] = &[
-    (b"\x1b[6n", b"\x1b[1;1R"),
+    (b"\x1b[6n", b"\x1b[5;9R"),
     (b"\x1b[c", b"\x1b[?1;0c"),
     (b"\x1b[0c", b"\x1b[?1;0c"),
 ];
@@ -55,6 +59,7 @@ fn query_child() {
     for &(query, reply) in QUERIES {
         for split in 1..query.len() {
             writeln!(output, "QUERY:{sample}").unwrap();
+            output.write_all(CURSOR_SPOT).unwrap();
             output.write_all(&query[..split]).unwrap();
             output.flush().unwrap();
             let mut ack = [0];
@@ -70,6 +75,7 @@ fn query_child() {
             sample += 1;
         }
     }
+    output.write_all(CURSOR_SPOT).unwrap();
     for &(query, _) in QUERIES {
         output.write_all(query).unwrap();
     }
@@ -106,5 +112,46 @@ fn fragmented_and_batched_queries_receive_one_ordered_reply() {
         }
     }
     session.expect("QUERIES-DONE").unwrap();
+    assert_eq!(session.expect_eof().unwrap(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "native child fixture, explicitly launched by its parent"]
+fn measuring_child() {
+    use std::io::{self, Read, Write};
+    assert!(std::process::Command::new("stty")
+        .args(["-echo", "-icanon", "min", "1", "time", "0"])
+        .status()
+        .unwrap()
+        .success());
+    let mut input = io::stdin();
+    let mut output = io::stdout();
+    // An application measures how wide the terminal draws a glyph by printing
+    // it at the origin and asking where the cursor went. The screen draws
+    // each code point of a ZWJ cluster on its own: 2 + 2 + 0 + 2 columns.
+    for (glyph, reply) in [
+        ("\u{4E2D}", "\x1b[1;3R"),
+        ("\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB}", "\x1b[1;7R"),
+    ] {
+        write!(output, "\x1b[H{glyph}\x1b[6n").unwrap();
+        output.flush().unwrap();
+        let mut received = vec![0; reply.len()];
+        input.read_exact(&mut received).unwrap();
+        assert_eq!(String::from_utf8_lossy(&received), reply, "{glyph}");
+    }
+    println!("\r\nMEASURED");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cursor_report_follows_the_output_before_the_query() {
+    let executable = std::env::current_exe().unwrap();
+    let mut session = PtySession::spawn(
+        executable.to_str().unwrap(),
+        &["--ignored", "--exact", "measuring_child", "--nocapture"],
+    )
+    .unwrap();
+    session.expect("MEASURED").unwrap();
     assert_eq!(session.expect_eof().unwrap(), 0);
 }
