@@ -132,13 +132,12 @@ impl PtySession {
                         let replies = {
                             let mut s = shared_for_thread.lock().unwrap();
                             s.raw.extend_from_slice(&chunk[..n]);
-                            s.parser.process(&chunk[..n]);
-                            terminal_replies(&mut s)
+                            process_and_reply(&mut s)
                         };
                         if !replies.is_empty() {
                             let mut w = writer_for_thread.lock().unwrap();
                             for reply in replies {
-                                let _ = w.write_all(reply);
+                                let _ = w.write_all(&reply);
                             }
                             let _ = w.flush();
                         }
@@ -325,34 +324,56 @@ impl PtySession {
     }
 }
 
-/// Model the VT100 screen: cursor at its initial origin, no advanced DA1 features.
+/// How the modelled VT100 terminal answers a query.
+enum TerminalReply {
+    /// The screen's cursor after every byte before the query, 1-based.
+    CursorPosition,
+    Fixed(&'static [u8]),
+}
+
+/// Model the VT100 screen: its real cursor, no advanced DA1 features.
 /// ConPTY sends DSR(6) followed by DA1 and waits for the latter before startup.
-const TERMINAL_QUERIES: &[(&[u8], &[u8])] = &[
-    (b"\x1b[6n", b"\x1b[1;1R"),
-    (b"\x1b[c", b"\x1b[?1;0c"),
-    (b"\x1b[0c", b"\x1b[?1;0c"),
+const TERMINAL_QUERIES: &[(&[u8], TerminalReply)] = &[
+    (b"\x1b[6n", TerminalReply::CursorPosition),
+    (b"\x1b[c", TerminalReply::Fixed(b"\x1b[?1;0c")),
+    (b"\x1b[0c", TerminalReply::Fixed(b"\x1b[?1;0c")),
 ];
 
-/// Scan new bytes plus an incomplete query suffix, replying exactly once in order.
-fn terminal_replies(s: &mut Shared) -> Vec<&'static [u8]> {
+/// Feed the bytes read since the last call to the screen and answer the
+/// queries among them, plus a query split across reads, once each and in
+/// wire order. The screen takes the bytes up to each query before it is
+/// answered, so a cursor report says where the output so far left the cursor,
+/// as a real terminal's does. An application can then measure, for example,
+/// how wide this terminal draws a glyph.
+fn process_and_reply(s: &mut Shared) -> Vec<Vec<u8>> {
     let previous = s.terminal_scanned;
     let overlap = TERMINAL_QUERIES
         .iter()
         .map(|(query, _)| query.len() - 1)
         .max()
         .unwrap();
+    let mut fed = previous;
     let mut replies = Vec::new();
     for index in previous.saturating_sub(overlap)..s.raw.len() {
         if s.raw[index] != b'\x1b' {
             continue;
         }
-        for &(query, reply) in TERMINAL_QUERIES {
+        for (query, reply) in TERMINAL_QUERIES {
             let end = index + query.len();
-            if end > previous && s.raw.get(index..end) == Some(query) {
-                replies.push(reply);
+            if end > previous && s.raw.get(index..end) == Some(*query) {
+                s.parser.process(&s.raw[fed..end]);
+                fed = end;
+                replies.push(match reply {
+                    TerminalReply::CursorPosition => {
+                        let (row, column) = s.parser.screen().cursor_position();
+                        format!("\x1b[{};{}R", row + 1, column + 1).into_bytes()
+                    }
+                    TerminalReply::Fixed(bytes) => bytes.to_vec(),
+                });
             }
         }
     }
+    s.parser.process(&s.raw[fed..]);
     s.terminal_scanned = s.raw.len();
     replies
 }
